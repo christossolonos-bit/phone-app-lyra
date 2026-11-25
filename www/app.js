@@ -127,7 +127,9 @@ function planPrompt(text) {
 {"actions":[...], "remember":[...]}
 Action types (use only what he actually asks for; most messages need none):
 {"type":"remind","text":"what to remind","when":"YYYY-MM-DD HH:MM"} (24-hour local time; "when":"" if he gave no time)
-{"type":"cancel_reminder","match":"words"}
+{"type":"change_reminder","match":"words from the reminder, or empty for the one just set","when":"YYYY-MM-DD HH:MM or empty to keep the time","text":"new wording or empty to keep it"} (move, change, push back, make it later/earlier)
+{"type":"cancel_reminder","match":"words from the reminder, or empty for the one just set"}
+Upcoming reminders: ${S.reminders.filter((x) => x.at > Date.now()).map((x) => `"${x.text}" at ${fmtWhen(x.at)}`).join('; ') || 'none'}
 {"type":"shopping_add","items":["ham","bread"]}  {"type":"shopping_remove","items":[...]}  {"type":"shopping_done","items":[...]}  {"type":"shopping_list"}
 (shopping_done = cross off / tick off / bought / got it. Use the item names exactly as they are on the list. "them", "it", "those" mean the items just talked about; "everything" or "all" means every item on the list, written out.)
 Shopping list now: ${S.list.filter((x) => !x.done).map((x) => x.text).join(', ') || 'empty'}
@@ -164,6 +166,12 @@ function fixTime(userText, when) {
     let h = +ap[1]; const mi = +(ap[2] || 0);
     if (ap[3]) { if (/pm/i.test(ap[3]) && h < 12) h += 12; if (/am/i.test(ap[3]) && h === 12) h = 0; }
     if (h > 23 || mi > 59) return d;
+    // "9:45" with no am/pm: if the model picked the same clock time in the evening, keep its choice;
+    // with no model time, the next 9:45 to come (tonight before tomorrow morning)
+    if (!ap[3] && h < 12) {
+      if (d && d.getHours() === h + 12) h += 12;
+      else if (!d) { const pm = new Date(now); pm.setHours(h + 12, mi, 0, 0); const am = new Date(now); am.setHours(h, mi, 0, 0); if (am <= now && pm > now) h += 12; }
+    }
     if (!d) { d = new Date(now); if (/\btomorrow\b/i.test(userText)) d.setDate(d.getDate() + 1); }
     d.setHours(h, mi, 0, 0);
     if (d <= now) d.setDate(d.getDate() + 1); // a time already gone today means the next one
@@ -174,6 +182,14 @@ function fixTime(userText, when) {
 // ---------------- doing the actions (each one reports what really happened) ----------------
 const norm = (s) => String(s).toLowerCase().trim();
 const findItem = (it) => S.list.find((x) => !x.done && (norm(x.text) === norm(it) || norm(x.text).includes(norm(it)) || norm(it).includes(norm(x.text))));
+// The reminder he means: by its words, or the latest one set when he says "it" / "that one".
+function findReminder(match) {
+  const up = S.reminders.filter((x) => x.at > Date.now());
+  const m = norm(match || '').replace(/\b(the|my|a|reminder|about|to|for|it|that|one)\b/g, ' ').trim();
+  if (!m) return up[up.length - 1];
+  const words = m.split(/\s+/).filter((w) => w.length > 2);
+  return up.find((x) => norm(x.text).includes(m)) || up.find((x) => words.some((w) => norm(x.text).includes(w)));
+}
 async function act(a, userText) {
   switch (a.type) {
     case 'remind': {
@@ -189,10 +205,30 @@ async function act(a, userText) {
       return `Reminder set for ${fmtWhen(at)}: "${text}".`;
     }
     case 'cancel_reminder': {
-      const r = S.reminders.find((x) => norm(x.text).includes(norm(a.match || '')));
+      const r = findReminder(a.match);
       if (!r) return 'No matching reminder was found; nothing was cancelled.';
       await cancelReminder(r.id);
       return `Cancelled the reminder "${r.text}".`;
+    }
+    case 'change_reminder': {
+      const r = findReminder(a.match);
+      if (!r) return 'No matching upcoming reminder was found; nothing was changed. Ask him which one.';
+      // only a message that talks about time moves it ("change it to say…" keeps the time, whatever the model guessed)
+      const timeGiven = /\d|\b(tomorrow|tonight|today|minutes?|hours?|morning|afternoon|evening|noon|midnight|later|earlier|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(userText);
+      // "10 minutes earlier" / "an hour later": worked out here, not by the model
+      const sh = userText.match(/\b(\d+|an?|half an?)\s*(min|minute|hour|hr)s?\s*(earlier|sooner|before|later|after)\b/i);
+      const at = sh ? new Date(r.at + (sh[3].match(/earlier|sooner|before/i) ? -1 : 1) * (/^half/i.test(sh[1]) ? 0.5 : /^an?$/i.test(sh[1]) ? 1 : +sh[1]) * (/^h/i.test(sh[2]) ? 3600e3 : 60e3))
+        : timeGiven ? fixTime(userText, a.when) : new Date(r.at);
+      if (!at) return `I couldn't tell the new time for "${r.text}"; it is unchanged (still ${fmtWhen(r.at)}). Ask him for the time.`;
+      if (at <= new Date()) return `The new time (${fmtWhen(at)}) has already passed; the reminder is unchanged (still ${fmtWhen(r.at)}).`;
+      const text = String(a.text || '').trim().slice(0, 200) || r.text;
+      try {
+        await Notes.cancel({ notifications: [{ id: r.id }] }).catch(() => {});
+        await Notes.schedule({ notifications: [{ id: r.id, title: 'Lyra', body: text, schedule: { at, allowWhileIdle: true } }] });
+      } catch (e) { return `Changing the reminder failed (${e.message}). Tell him it didn't work.`; }
+      const before = `${fmtWhen(r.at)} "${r.text}"`;
+      r.at = at.getTime(); r.text = text; save(); renderReminders();
+      return `Reminder changed from ${before} to ${fmtWhen(at)} "${text}".`;
     }
     case 'shopping_add': {
       const added = [];
@@ -278,13 +314,13 @@ async function reply(text, memories, happened) {
 // She may only say she changed the list or set a reminder when that action really ran this turn.
 const CLAIMS = [
   { re: /\b(crossed|ticked|checked|marked|taken|took)\b[^.?!]*\boff\b|\b(added|removed|deleted)\b[^.?!]*\b(list|it|them)\b|\boff (your|the) (shopping )?list\b|\b(it'?s|they'?re|all) (done|gone|sorted)\b/i, kind: 'shopping_', what: 'was changed on the shopping list' },
-  { re: /\b(i'?ll|i will|gonna) (remind|ping|nudge) you\b|\breminder('?s| is)? (set|on|done)\b|\bset (a|the|your) reminder\b/i, kind: 'remind', what: 'reminder was set' },
+  { re: /\b(i'?ll|i will|gonna) (remind|ping|nudge) you\b|\breminder('?s| is)? (set|on|done)\b|\bset (a|the|your) reminder\b|\b(moved|changed|pushed|updated|cancelled|canceled)\b[^.?!]*\breminder\b|\breminder\b[^.?!]*\b(moved|changed|pushed|updated|cancelled|canceled)\b/i, kind: 'remind', what: 'reminder was set or changed' },
 ];
 function falseClaim(out, actions) {
   const tried = actions.map((a) => String(a.type || ''));
   // sentence by sentence, so "I added it to your diary" isn't read as a shopping-list claim
   const sentences = String(out).split(/(?<=[.?!])\s+/).filter((s) => !(/diary|calendar/i.test(s)));
-  const c = CLAIMS.find((x) => sentences.some((s) => x.re.test(s)) && !tried.some((t) => t.startsWith(x.kind)));
+  const c = CLAIMS.find((x) => sentences.some((s) => x.re.test(s)) && !tried.some((t) => t.startsWith(x.kind) || (x.kind === 'remind' && t.endsWith('_reminder'))));
   return c ? c.what : '';
 }
 
