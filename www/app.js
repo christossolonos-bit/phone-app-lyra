@@ -146,8 +146,10 @@ async function embed(texts, kind) {
   const d = await post(`${NV}/embeddings`, { model: M.embed, input: texts, input_type: kind, encoding_format: 'float', truncate: 'END' }, nvHeaders(), 20000);
   return [...(d.data || [])].sort((a, b) => (a.index || 0) - (b.index || 0)).map((r) => r.embedding.map((x) => Math.round(x * 1e4) / 1e4));
 }
-async function look(b64, mime, question) {
-  const prompt = `${name()} is showing you this photo${question ? ` with the message: "${question}"` : ''}. Describe plainly what's in it, read out any text in it, and note anything that matters for the message. 2 to 6 short sentences. Don't guess beyond what's visible.`;
+async function look(b64, mime, question, live = false) {
+  const prompt = live
+    ? `This is a frame from ${name()}'s phone camera right now, during a live video call with you, taken as he said: "${question || '(nothing, he wants you to look)'}". Describe what he's showing or doing that matters for what he said: the objects, products (brand, model, price tags, the specs printed on boxes; read text exactly), what his hands are doing, where he is. If he's comparing things, describe each one separately. 2 to 7 short sentences. Don't guess beyond what's visible.`
+    : `${name()} is showing you this photo${question ? ` with the message: "${question}"` : ''}. Describe plainly what's in it, read out any text in it, and note anything that matters for the message. 2 to 6 short sentences. Don't guess beyond what's visible.`;
   let last;
   for (const [i, model] of M.eyes.entries()) {
     try {
@@ -485,7 +487,7 @@ function system(memories, happened) {
   return `${typeof PERSONA === 'string' ? PERSONA.replaceAll('{OWNER}', owner) : 'You are Lyra, from the series Lyra AI: warm, witty, curious, with dry humour that\'s never cold.'}
 
 # Right now
-You're talking with ${owner}, on his phone. Now: ${nowLine()}.
+You're talking with ${owner}, on his phone. Now: ${nowLine()}.${videoCall ? `\nYou're on a live VIDEO CALL with him right now: each time he speaks, his message carries what his phone camera shows at that moment. React like a friend on a video call, to what you actually see. If he's choosing between things (in a shop, for example), compare them honestly from what's visible and what you know, say which one you'd pick and why, and say what you can't tell from the picture.` : ''}
 ${innerLife()}
 Set up on this phone right now (this is current; it overrides anything said earlier in the chat): news feeds: ${S.feeds.map((f) => f.name).join(', ') || 'none'}; weather town: ${S.place ? S.place.name : 'not set'}; people you can call: ${S.contacts.map((c) => c.name).join(', ') || 'none'}; apps you may open: ${Object.values(S.apps).filter((a) => a.open).map((a) => a.name).join(', ') || 'none'}; apps whose notifications you may read: ${Object.values(S.apps).filter((a) => a.notify).map((a) => a.name).join(', ') || 'none'}.
 If he asks for news or weather and no result is listed below, don't say anything is missing from Settings unless the line above says "none" or "not set"; say you couldn't fetch it this time and to ask again.
@@ -532,7 +534,7 @@ async function send(text, photo) {
     let said = text;
     if (photo) {
       status('looking…');
-      try { said = `${text || '(he sent a photo)'}\n[What the photo shows: ${await look(photo.b64, photo.mime, text)}]`; }
+      try { said = `${text || (photo.live ? '(he points his camera at something)' : '(he sent a photo)')}\n[${photo.live ? 'What his camera shows right now' : 'What the photo shows'}: ${await look(photo.b64, photo.mime, text, photo.live)}]`; }
       catch { said = `${text}\n[He sent a photo but I couldn't see it this time.]`; }
     }
     const [p, memories] = await Promise.all([plan(said), recall(said)]);
@@ -590,7 +592,7 @@ function bubble(kind, text, img) {
 }
 function renderChat() {
   $('chat').innerHTML = '';
-  for (const h of chatSoFar().slice(-40)) bubble(h.role, h.role === 'me' ? h.text.replace(/\n\[What the photo shows:[\s\S]*\]$/, '\n📷 (photo)') : h.text);
+  for (const h of chatSoFar().slice(-40)) bubble(h.role, h.role === 'me' ? h.text.replace(/\n\[What (the photo shows|his camera shows right now):[\s\S]*\]$/, '\n📷 (photo)') : h.text);
   if (!chatSoFar().length) bubble('note', S.settings.nvidia ? 'Say hi.' : 'Hi. Open Settings and paste your NVIDIA and Fish keys, and I\'m all yours.');
 }
 
@@ -618,7 +620,48 @@ const BYE = /^(ok(ay)?\s+)?(bye|bye bye|goodbye|good night|goodnight|stop listen
 function setHandsFree(on, note) {
   handsFree = on;
   $('handsFree').classList.toggle('on', on);
-  if (!on) { try { Speech.stop(); } catch { /* not listening */ } status(); if (note) toast(note); }
+  if (!on) { try { Speech.stop(); } catch { /* not listening */ } status(); if (note) toast(note); if (videoCall) endVideoCall(); }
+}
+
+// ---------------- video call: she sees through your camera when you speak ----------------
+// Not a stream: NVIDIA's free models read pictures, not video. Each time you finish a sentence (or tap Look),
+// she gets one frame from the camera at that moment, so "which of these two?" works in a shop.
+let videoCall = false, camStream = null, facing = 'environment';
+async function startCam() {
+  stopCam();
+  camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+  const v = $('cam'); v.srcObject = camStream; await v.play().catch(() => {});
+}
+function stopCam() { if (camStream) camStream.getTracks().forEach((t) => t.stop()); camStream = null; $('cam').srcObject = null; }
+function grabFrame() {
+  const v = $('cam');
+  if (!camStream || !v.videoWidth) return null;
+  const w = Math.min(1280, v.videoWidth), h = Math.round((v.videoHeight * w) / v.videoWidth);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  c.getContext('2d').drawImage(v, 0, 0, w, h);
+  return { b64: c.toDataURL('image/jpeg', 0.8).split(',')[1], mime: 'image/jpeg', live: true };
+}
+async function startVideoCall() {
+  try { await startCam(); }
+  catch (e) { toast(/denied|permission|notallowed/i.test(e.name + e.message) ? 'Lyra needs the camera for a video call' : `Camera not available (${e.message})`); return; }
+  videoCall = true;
+  $('call').hidden = false;
+  $('call').appendChild($('stage')); $('stage').classList.add('pip'); $('stage').hidden = false;
+  setTimeout(() => window.lyraAvatar?.resize(), 50);
+  $('videoCall').classList.add('on');
+  stopVoice();
+  if (!handsFree) { setHandsFree(true); handsFreeLoop(); }
+  toast('Video call: just talk. She sees what your camera sees each time you speak.');
+}
+function endVideoCall() {
+  if (!videoCall) return;
+  videoCall = false;
+  stopCam();
+  $('call').hidden = true;
+  $('stage').classList.remove('pip'); $('tab-chat').insertBefore($('stage'), $('chat'));
+  paintAvatar();
+  $('videoCall').classList.remove('on');
+  if (handsFree) setHandsFree(false);
 }
 async function handsFreeLoop() {
   try {
@@ -635,9 +678,9 @@ async function handsFreeLoop() {
     catch { said = ''; }
     $('mic').classList.remove('listening');
     if (!handsFree) break;
-    if (!said) { if (++misses >= 3) setHandsFree(false, 'Hands-free is off (I heard nothing). Tap 🎧 to talk again.'); continue; }
+    if (!said) { if (!videoCall && ++misses >= 3) setHandsFree(false, 'Hands-free is off (I heard nothing). Tap 🎧 to talk again.'); continue; }
     misses = 0;
-    const p = attached; attached = null; showAttached();
+    const p = videoCall ? grabFrame() : attached; if (!videoCall) { attached = null; showAttached(); }
     await send(said, p);
     await lastSpoken;
     if (BYE.test(said)) { setHandsFree(false, 'Hands-free is off'); break; }
@@ -899,6 +942,10 @@ function wire() {
   document.querySelectorAll('nav button').forEach((b) => { b.onclick = () => showTab(b.dataset.tab); });
   $('form').onsubmit = (e) => { e.preventDefault(); const t = $('text').value; const p = attached; $('text').value = ''; attached = null; showAttached(); send(t, p); };
   $('mic').onclick = listen;
+  $('videoCall').onclick = () => (videoCall ? endVideoCall() : startVideoCall());
+  $('callEnd').onclick = endVideoCall;
+  $('camFlip').onclick = async () => { facing = facing === 'environment' ? 'user' : 'environment'; try { await startCam(); } catch { toast("Couldn't switch camera"); } };
+  $('camLook').onclick = () => { const f = grabFrame(); if (f) send('What do you think of this?', f); };
   // tap her face at the top to show or hide her 3D self
   $('face').onclick = () => { S.settings.avatarOn = !(S.settings.avatarOn !== false); save(); paintAvatar(); };
   $('handsFree').onclick = () => { if (handsFree) setHandsFree(false, 'Hands-free is off'); else { setHandsFree(true); stopVoice(); toast('Hands-free: just talk. Say "bye" or tap 🎧 to stop.'); handsFreeLoop(); } };

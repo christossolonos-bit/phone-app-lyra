@@ -72,3 +72,13 @@ input { width:100%; background:var(--bg); color:var(--text); border:1px solid va
 .stage.failed .stage-note { display:flex; }
 .stage::after { content:''; position:absolute; left:0; right:0; bottom:0; height:30px; background:linear-gradient(transparent, var(--bg)); pointer-events:none; }
 .face { cursor:pointer; }
+
+.call { position:relative; flex:0 0 48vh; background:#000; overflow:hidden; border-bottom:1px solid var(--border); }
+.call video { width:100%; height:100%; object-fit:cover; display:block; }
+.call-status { position:absolute; top:8px; left:10px; background:rgba(0,0,0,.55); color:#fff; font-size:12px; padding:4px 8px; border-radius:8px; }
+.call-bar { position:absolute; left:0; right:0; bottom:10px; display:flex; justify-content:center; gap:8px; }
+.call-bar .end { background:var(--bad); color:#fff; border-color:var(--bad); }
+.stage.pip { position:absolute; right:10px; top:10px; width:96px; height:124px; min-height:0; flex:none; border:1px solid rgba(63,224,255,.5); border-radius:14px; z-index:2; }
+.stage.pip::after { display:none; }
+#videoCall.on { background:var(--bad); color:#fff; }
+.msg.me img { max-width:160px; }

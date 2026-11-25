@@ -10,12 +10,22 @@
 <header>
   <img src="lyra.jpg" alt="" class="face" id="face">
   <div class="who"><b>Lyra</b><span id="status">here</span></div>
+  <button class="icon" id="videoCall" aria-label="Video call">📹</button>
   <button class="icon" id="handsFree" aria-label="Hands-free conversation">🎧</button>
   <button class="icon" id="voiceToggle" aria-label="Her voice on or off">🔊</button>
 </header>
 <div class="update" id="update" hidden></div>
 
 <section class="tab" id="tab-chat">
+  <div class="call" id="call" hidden>
+    <video id="cam" playsinline muted autoplay></video>
+    <div class="call-status" id="callStatus">Video call · just talk</div>
+    <div class="call-bar">
+      <button class="btn small" id="camFlip" type="button">🔄 Flip</button>
+      <button class="btn small go" id="camLook" type="button">👁 Look</button>
+      <button class="btn small end" id="callEnd" type="button">End call</button>
+    </div>
+  </div>
   <div class="stage" id="stage"><span class="stage-note">Lyra is arriving…</span></div>
   <div class="chat" id="chat"></div>
   <div class="attached" id="attached" hidden></div>
