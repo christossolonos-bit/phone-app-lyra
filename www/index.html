@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lyra</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <img src="lyra.jpg" alt="" class="face" id="face">
+  <div class="who"><b>Lyra</b><span id="status">here</span></div>
+  <button class="icon" id="voiceToggle" aria-label="Her voice on or off">🔊</button>
+</header>
+<div class="update" id="update" hidden></div>
+
+<section class="tab" id="tab-chat">
+  <div class="chat" id="chat"></div>
+  <div class="attached" id="attached" hidden></div>
+  <form class="bar" id="form">
+    <button type="button" class="icon" id="photo" aria-label="Show her a photo">📷</button>
+    <input id="text" placeholder="Talk to Lyra…" autocomplete="off" aria-label="Message">
+    <button type="button" class="icon mic" id="mic" aria-label="Speak">🎤</button>
+    <button type="submit" class="send" aria-label="Send">➤</button>
+  </form>
+</section>
+
+<section class="tab" id="tab-list" hidden>
+  <h2>Shopping list</h2>
+  <form class="row" id="listForm"><input id="listText" placeholder="Add items, e.g. milk, eggs and bread" autocomplete="off"><button class="btn go">Add</button></form>
+  <ul class="list" id="list"></ul>
+  <h3>Bought <button class="btn small" id="clearBought">Clear</button></h3>
+  <ul class="list" id="bought"></ul>
+</section>
+
+<section class="tab" id="tab-diary" hidden>
+  <h2>Diary</h2>
+  <p class="hint">Lyra writes a short entry about each day you talk, plus anything you ask her to write down.</p>
+  <div id="diary"></div>
+</section>
+
+<section class="tab" id="tab-reminders" hidden>
+  <h2>Reminders</h2>
+  <p class="hint">Say "remind me at 9pm to…". They arrive as phone notifications, even with the app closed.</p>
+  <ul class="list" id="reminders"></ul>
+</section>
+
+<section class="tab" id="tab-settings" hidden>
+  <h2>Settings</h2>
+  <div class="card">
+    <h3>Your name</h3>
+    <input id="sName" placeholder="Your name">
+  </div>
+  <div class="card">
+    <h3>Keys <span class="hint">(kept only on this phone)</span></h3>
+    <label>NVIDIA API key<input id="sNvidia" type="password" autocomplete="off" placeholder="nvapi-…"></label>
+    <label>Fish Audio API key<input id="sFish" type="password" autocomplete="off"></label>
+    <label>Her Fish voice ID<input id="sVoice" autocomplete="off"></label>
+    <label>Fish voice model<input id="sFishModel" autocomplete="off" placeholder="s2.1-pro-free"></label>
+    <button class="btn go" id="saveKeys">Save</button>
+  </div>
+  <div class="card">
+    <h3>People she can call</h3>
+    <p class="hint">Only these. She opens the dialler with the number ready, and you press call.</p>
+    <ul class="list" id="contacts"></ul>
+    <form class="row" id="contactForm"><input id="cName" placeholder="Name, e.g. Dad"><input id="cNumber" placeholder="Number" inputmode="tel"><button class="btn">Add</button></form>
+  </div>
+  <div class="card">
+    <h3>Apps Lyra can use</h3>
+    <p class="hint">Everything is off until you tick it. "Open" lets her open the app when you ask. "Notifs" lets her read and sum up that app's notifications. Nothing from any other app is read or kept.</p>
+    <div id="notifAccess"></div>
+    <input id="appFilter" placeholder="Find an app…" autocomplete="off">
+    <div id="apps"></div>
+  </div>
+  <div class="card">
+    <h3>Memory</h3>
+    <p class="hint" id="memCount"></p>
+    <div id="memories"></div>
+  </div>
+  <div class="card">
+    <h3>Updates</h3>
+    <p class="hint" id="versionLine"></p>
+    <button class="btn" id="checkUpdate">Check for updates</button>
+  </div>
+</section>
+
+<nav>
+  <button data-tab="chat" class="on">💬<span>Chat</span></button>
+  <button data-tab="list">🛒<span>List</span></button>
+  <button data-tab="diary">📔<span>Diary</span></button>
+  <button data-tab="reminders">⏰<span>Reminders</span></button>
+  <button data-tab="settings">⚙️<span>Settings</span></button>
+</nav>
+<div class="toast" id="toast"></div>
+<audio id="audio"></audio>
+<script src="capacitor-core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

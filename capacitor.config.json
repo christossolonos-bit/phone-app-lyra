@@ -1,0 +1,9 @@
+{
+  "appId": "com.lyra.mobile",
+  "appName": "Lyra",
+  "webDir": "www",
+  "android": { "allowMixedContent": false },
+  "plugins": {
+    "LocalNotifications": { "iconColor": "#3FE0FF" }
+  }
+}
