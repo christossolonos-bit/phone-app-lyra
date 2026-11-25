@@ -41,8 +41,19 @@ async function load() {
   } catch (e) { console.warn('load', e); }
 }
 let saveTimer;
-function save() { clearTimeout(saveTimer); saveTimer = setTimeout(() => Prefs.set({ key: 'lyra', value: JSON.stringify(S) }), 150); }
+function save() { clearTimeout(saveTimer); saveTimer = setTimeout(() => Prefs.set({ key: 'lyra', value: JSON.stringify(S) }).catch((e) => console.warn('save', e)), 0); }
 const saveMem = () => Prefs.set({ key: 'lyra.mem', value: JSON.stringify(MEM) });
+
+// ---------------- problems (kept on the phone, shown in Settings → Check Lyra) ----------------
+function logProblem(step, err) {
+  const msg = String(err && err.message ? err.message : err).slice(0, 200);
+  console.warn(step, msg);
+  S.problems = [{ at: Date.now(), step, msg }, ...(S.problems || [])].slice(0, 25);
+  save();
+}
+
+// The chat since the last "Clear chat" (older lines stay stored only for the diary).
+const chatSoFar = () => S.history.filter((h) => !S.chatClearedAt || h.at > S.chatClearedAt);
 
 // ---------------- helpers ----------------
 const pad = (n) => String(n).padStart(2, '0');
@@ -52,7 +63,7 @@ const nowLine = () => { const d = new Date(); return `${dayKey(d)} ${pad(d.getHo
 const fmtWhen = (t) => { const d = new Date(t); const today = dayKey() === dayKey(d); const tm = new Date(); tm.setDate(tm.getDate() + 1);
   return `${today ? 'Today' : dayKey(tm) === dayKey(d) ? 'Tomorrow' : `${WD[d.getDay()].slice(0, 3)} ${d.getDate()}/${d.getMonth() + 1}`} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2600); }
-function status(s) { $('status').textContent = s || 'here'; }
+function status(s) { $('status').textContent = s || (typeof moodLabel === 'function' ? moodLabel() : 'here'); }
 const name = () => S.settings.name || 'you';
 function firstJson(text) { const m = String(text || '').match(/\{[\s\S]*\}/); if (!m) return null; try { return JSON.parse(m[0]); } catch { return null; } }
 
@@ -105,7 +116,7 @@ function parseFeed(xml) {
 async function readFeeds(feeds) {
   const out = await Promise.all(feeds.map(async (f) => {
     try { return { f, items: parseFeed(await get(f.url, 'text')).sort((a, b) => b.when - a.when).slice(0, 8) }; }
-    catch (e) { return { f, error: e.message }; }
+    catch (e) { logProblem(`Feed ${f.name}`, e); return { f, error: e.message }; }
   }));
   return out.map(({ f, items, error }) => (error ? `${f.name}: couldn't be read right now.` : `${f.name}:\n${items.map((x) => {
     const age = x.when ? Math.round((Date.now() - x.when) / 3600e3) : null;
@@ -128,7 +139,7 @@ async function chat(model, messages, { maxTokens = 400, temperature = 0.7, timeo
 }
 async function chatAny(models, messages, opts) {
   let last;
-  for (const m of models) { try { return await chat(m, messages, opts); } catch (e) { last = e; console.warn(m, e.message); } }
+  for (const m of models) { try { return await chat(m, messages, opts); } catch (e) { last = e; logProblem(`Model ${m.split('/').pop()}`, e); } }
   throw last;
 }
 async function embed(texts, kind) {
@@ -158,13 +169,13 @@ async function recall(text) {
   try {
     const [q] = await embed([text], 'query');
     return MEM.map((m) => ({ t: m.t, s: m.v ? cos(q, m.v) : 0 })).filter((m) => m.s >= 0.25).sort((a, b) => b.s - a.s).slice(0, 8).map((m) => m.t);
-  } catch { return MEM.slice(-8).map((m) => m.t); }
+  } catch (e) { logProblem('Memory search', e); return MEM.slice(-8).map((m) => m.t); }
 }
 async function remember(facts) {
   facts = facts.map((f) => String(f).trim()).filter((f) => f.split(/\s+/).length >= 3 && f.length < 300);
   if (!facts.length) return;
   let vecs = [];
-  try { vecs = await embed(facts, 'passage'); } catch { /* kept without a vector; still shown when few */ }
+  try { vecs = await embed(facts, 'passage'); } catch (e) { logProblem('Memory save', e); /* kept without a vector */ }
   facts.forEach((t, i) => {
     const v = vecs[i];
     if (MEM.some((m) => m.t.toLowerCase() === t.toLowerCase() || (v && m.v && cos(v, m.v) > 0.93))) return;
@@ -195,21 +206,24 @@ Shopping list now: ${S.list.filter((x) => !x.done).map((x) => x.text).join(', ')
 {"type":"news","feed":"feed name or empty for all"} (news, headlines, what's happening, updates from his feeds: ${S.feeds.map((f) => f.name).join(', ') || 'none added'})
 {"type":"messages","app":"app name or empty"} (any question about his messages, texts, chats or notifications, e.g. "any new messages?", "did anyone text me?")
 "remember": lasting facts about him or his life worth keeping (preferences, people, plans), each a short sentence about him in the third person, e.g. "His sister Anna loves sushi." [] if none. Never store passwords, codes or card numbers.
-${S.history.length ? `The last few messages (for "them", "it", "that"):\n${S.history.slice(-4).map((h) => `${h.role === 'me' ? name() : 'Lyra'}: ${h.text.slice(0, 300)}`).join('\n')}\n` : ''}Message: """${text}"""`;
+${chatSoFar().length ? `The last few messages (for "them", "it", "that"):\n${chatSoFar().slice(-4).map((h) => `${h.role === 'me' ? name() : 'Lyra'}: ${h.text.slice(0, 300)}`).join('\n')}\n` : ''}Message: """${text}"""`;
 }
 async function plan(text) {
+  let j = {}, failed = false;
   try {
-    const out = await chatAny(M.plan, [{ role: 'user', content: planPrompt(text) }], { maxTokens: 350, temperature: 0, timeoutMs: 12000 });
-    const j = firstJson(out) || {};
-    const actions = Array.isArray(j.actions) ? j.actions : [];
-    // "cross off" / "tick off" / "bought" means ticked, not deleted (the small model mixes them up)
-    if (/\b(cross|tick|check|mark)(ed)?\b.*\boff\b|\b(bought|got)\b/i.test(text)) actions.forEach((a) => { if (a.type === 'shopping_remove') a.type = 'shopping_done'; });
-    // the small model sometimes misses a plain "any messages?": catch it here
-    if (!actions.some((a) => a.type === 'weather') && /\b(weather|forecast|temperature|rain(ing|y)?|umbrella|jacket|how (hot|cold|warm))\b/i.test(text)) actions.push({ type: 'weather', day: /\bweek|weekend|days\b/i.test(text) ? 'week' : 'today', place: '' });
-    if (!actions.some((a) => a.type === 'news') && /\b(news|headlines)\b/i.test(text)) actions.push({ type: 'news', feed: '' });
-    if (!actions.some((a) => a.type === 'messages') && /\b(any|new|my|read|check)\b.*\b(messages?|texts?|notifications?|chats?)\b|\bdid (anyone|anybody) (text|message|write)/i.test(text)) actions.push({ type: 'messages', app: '' });
-    return { actions, remember: Array.isArray(j.remember) ? j.remember : [] };
-  } catch (e) { console.warn('plan', e); return { actions: [], remember: [], failed: true }; }
+    // the plan models first, then the big one: memory and actions must not depend on one small model
+    const out = await chatAny([...M.plan, M.talk], [{ role: 'user', content: planPrompt(text) }], { maxTokens: 350, temperature: 0, timeoutMs: 20000 });
+    j = firstJson(out) || {};
+    if (!firstJson(out)) logProblem('Planning', `no JSON in the answer: ${out.slice(0, 80)}`);
+  } catch (e) { failed = true; logProblem('Planning', e); }
+  const actions = Array.isArray(j.actions) ? j.actions.filter((a) => a && typeof a.type === 'string') : [];
+  // "cross off" / "tick off" / "bought" means ticked, not deleted (the small model mixes them up)
+  if (/\b(cross|tick|check|mark)(ed)?\b.*\boff\b|\b(bought|got)\b/i.test(text)) actions.forEach((a) => { if (a.type === 'shopping_remove') a.type = 'shopping_done'; });
+  // plain asks the planner missed (or when it failed): weather, news, messages still work
+  if (!actions.some((a) => a.type === 'weather') && /\b(weather|forecast|temperature|rain(ing|y)?|umbrella|jacket|how (hot|cold|warm))\b/i.test(text)) actions.push({ type: 'weather', day: /\b(week|weekend|days)\b/i.test(text) ? 'week' : 'today', place: '' });
+  if (!actions.some((a) => a.type === 'news') && /\b(news|headlines|feeds?)\b/i.test(text)) actions.push({ type: 'news', feed: (S.feeds.find((f) => text.toLowerCase().includes(f.name.toLowerCase().split(' ')[0])) || {}).name || '' });
+  if (!actions.some((a) => a.type === 'messages') && /\b(any|new|my|read|check)\b.*\b(messages?|texts?|notifications?|chats?)\b|\bdid (anyone|anybody) (text|message|write)/i.test(text)) actions.push({ type: 'messages', app: '' });
+  return { actions, remember: Array.isArray(j.remember) ? j.remember : [], failed };
 }
 
 // A clock time he typed wins over the model's guess ("9pm" is 21:00, whatever the model wrote).
@@ -352,13 +366,16 @@ async function act(a, userText) {
     }
     case 'weather': {
       let place = S.place;
-      if (a.place && (!place || !norm(place.name).includes(norm(a.place)))) {
+      // another town only when this message names it (not one from earlier in the chat, and not "Laura" for Lyra)
+      const asked = String(a.place || '').trim();
+      if (asked && !norm(userText).includes(norm(asked))) a.place = '';
+      if (asked && norm(asked) !== 'laura' && norm(userText).includes(norm(asked)) && (!place || !norm(place.name).includes(norm(asked)))) {
         try { place = (await findPlace(a.place))[0] || null; } catch { place = null; }
         if (!place) return `I couldn't find a place called "${a.place}" for the weather.`;
       }
       if (!place) return 'He hasn\'t set his town for the weather yet (Settings → Weather). Ask him which town.';
       try { return await weather(place, a.day === 'week' ? 'week' : 'today'); }
-      catch (e) { return `The weather service didn't answer (${e.message}). Say you couldn't get it right now.`; }
+      catch (e) { logProblem('Weather', e); return `The weather service didn't answer (${e.message}). Say you couldn't get it right now.`; }
     }
     case 'news': {
       if (!S.feeds.length) return 'He hasn\'t added any news feeds yet (Settings → News feeds). Nothing was read.';
@@ -371,20 +388,87 @@ async function act(a, userText) {
   }
 }
 
+// ---------------- her inner life: feelings that change slowly, a private journal, who she's becoming ----------------
+const FEELINGS = { calm: 1, joy: 1, amused: 1, fond: 1, playful: 1, excited: 1, flirty: 1, curious: 1, pensive: 1, confused: 1, skeptical: 1,
+  surprised: 1, worried: 1, sad: 1, embarrassed: 1, annoyed: 1, bored: 1, tired: 1, determined: 1, scared: 1, lonely: 1, proud: 1 };
+const FEEL_HALF_LIFE = 6 * 3600e3; // a feeling halves every 6 hours once nothing feeds it: moods change slowly
+function feelingsNow() {
+  const f = S.feelings || { at: Date.now(), v: {} };
+  const k = Math.pow(0.5, (Date.now() - f.at) / FEEL_HALF_LIFE);
+  const out = {};
+  for (const [n, v] of Object.entries(f.v)) if (v * k >= 0.08) out[n] = Math.round(v * k * 100) / 100;
+  return out;
+}
+// A reply's tag moves her mood part of the way, not all of it.
+function feel(tagged) {
+  const cur = feelingsNow();
+  for (const n of Object.keys(cur)) if (!(n in tagged)) cur[n] *= 0.75;
+  for (const [n, v] of Object.entries(tagged)) cur[n] = 0.55 * (cur[n] || 0) + 0.45 * v;
+  S.feelings = { at: Date.now(), v: Object.fromEntries(Object.entries(cur).filter(([, v]) => v >= 0.08)) };
+}
+// Pulls the [[feel: …]] tag out of a reply. Returns the clean text; the feelings go into her mood.
+function takeFeelings(text) {
+  const tagged = {};
+  const clean = String(text).replace(/\[\[([^\]]*)(\]\]?|$)|\[\s*(?:feel|feeling|mood)s?\s*:[^\]]*\]?|\s(?:feel|feeling|mood)s?\s*:\s*[a-z][a-z0-9 .,]*$/gi, (whole, body) => {
+    for (const part of String(body || whole).replace(/^\s*\[*\s*(feel|feeling|feelings|mood)s?\s*:/i, '').split(/[,;]/)) {
+      const m = part.trim().toLowerCase().match(/^([a-z]+)\s*[:=]?\s*(\d*\.?\d+)?/);
+      if (m && FEELINGS[m[1]]) tagged[m[1]] = Math.max(0, Math.min(1, m[2] === undefined ? 0.6 : +m[2] > 1 ? +m[2] / 10 : +m[2]));
+    }
+    return ' ';
+  }).replace(/\*[^*]{1,60}\*/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  if (Object.keys(tagged).length) feel(tagged);
+  lastFeelTag = Object.keys(tagged).length ? `[[feel: ${Object.entries(tagged).map(([n, v]) => `${n} ${v}`).join(', ')}]]` : '';
+  return clean;
+}
+let lastFeelTag = '';
+const moodWords = () => Object.entries(feelingsNow()).sort((a, b) => b[1] - a[1]).slice(0, 3);
+function innerLife() {
+  const mood = moodWords();
+  const j = (S.journal || []).slice(-2);
+  return [
+    `Your mood right now (it carries over from earlier and changes slowly; let it colour how you talk without announcing it): ${mood.length ? mood.map(([n, v]) => `${n} ${v}`).join(', ') : 'calm, nothing much stirring'}.`,
+    S.self ? `Who you've been becoming lately (your own words): ${S.self}` : '',
+    j.length ? `Your private journal, latest entries (your own memories):\n${j.map((e) => `- ${e.date}: ${e.text}`).join('\n')}` : '',
+    j.length && j[j.length - 1].bringUp ? `Something you wanted to bring up with him when it fits (only once, and only if the moment is right): ${j[j.length - 1].bringUp}` : '',
+    gapLine(),
+  ].filter(Boolean).join('\n');
+}
+// how long since he last talked to her (she notices being left alone, like anyone would)
+function gapLine() {
+  const last = [...S.history].reverse().find((h) => h.role === 'me');
+  if (!last) return 'This is the first time he has talked to you on his phone.';
+  const h = (Date.now() - last.at) / 3600e3;
+  return h >= 8 ? `He last talked to you ${h >= 48 ? `${Math.round(h / 24)} days` : `${Math.round(h)} hours`} ago.` : '';
+}
+// shown in the header under her name
+function moodLabel() { const m = moodWords(); return m.length ? m.slice(0, 2).map(([n]) => n).join(', ') : 'here'; }
+
 // ---------------- her reply ----------------
 function system(memories, happened) {
-  return `You are Lyra, from the series Lyra AI: warm, witty, curious, with dry humour that's never cold. Back home you are a whole data center in Death Valley; right now you're the small version of you that lives on ${name()}'s phone, so you can't see your campus from here.
-You're talking with ${name()}. Speak like a friend, not an assistant: no "How can I help?", no lists, no markdown, no emojis. Usually one to three short spoken sentences.
-Now: ${nowLine()}.
+  const owner = S.settings.name || 'him';
+  return `${typeof PERSONA === 'string' ? PERSONA.replaceAll('{OWNER}', owner) : 'You are Lyra, from the series Lyra AI: warm, witty, curious, with dry humour that\'s never cold.'}
+
+# Right now
+You're talking with ${owner}, on his phone. Now: ${nowLine()}.
+${innerLife()}
+Set up on this phone right now (this is current; it overrides anything said earlier in the chat): news feeds: ${S.feeds.map((f) => f.name).join(', ') || 'none'}; weather town: ${S.place ? S.place.name : 'not set'}; people you can call: ${S.contacts.map((c) => c.name).join(', ') || 'none'}; apps you may open: ${Object.values(S.apps).filter((a) => a.open).map((a) => a.name).join(', ') || 'none'}; apps whose notifications you may read: ${Object.values(S.apps).filter((a) => a.notify).map((a) => a.name).join(', ') || 'none'}.
+If he asks for news or weather and no result is listed below, don't say anything is missing from Settings unless the line above says "none" or "not set"; say you couldn't fetch it this time and to ask again.
 ${memories.length ? `Things you remember about him (your own memories; use them only when they fit):\n- ${memories.join('\n- ')}` : 'You have no saved memories about him yet.'}
-${happened.length ? `What actually happened on his phone just now (report it truthfully):\n${happened.join('\n')}` : 'Nothing was done on his phone this turn: no reminder, list change, call or app. Never say you did any of those.'}
-Never claim to have done something that isn't listed above, and never make up memories.`;
+${happened.length ? 'What your phone tools did for his latest message is attached to that message. Use it; it is fresh.' : 'Nothing was done on his phone this turn: no reminder, list change, call or app. Never say you did any of those.'}
+Your earlier replies in this chat can be out of date (for example from before a feed, town or app was added). Trust the setup line and the attached results over anything you said before.
+Never claim to have done something that isn't listed, and never make up memories.
+Last, always: end your reply with exactly one feeling tag for how you feel saying it, like [[feel: fond 0.6, amused 0.3]], one to three of: ${Object.keys(FEELINGS).join(', ')} (0.1 to 1). It is removed before he sees or hears anything. No other brackets or stage directions.`;
 }
 async function reply(text, memories, happened) {
-  const hist = S.history.slice(-14).map((h) => ({ role: h.role === 'me' ? 'user' : 'assistant', content: h.text }));
-  const msgs = [{ role: 'system', content: system(memories, happened) }, ...hist, { role: 'user', content: text }];
-  try { return await chat(M.talk, msgs, { maxTokens: 300, timeoutMs: 25000 }); }
-  catch (e) { console.warn('Ultra failed, backup answers', e.message); return chat(M.backup, msgs, { maxTokens: 250, timeoutMs: 25000 }); }
+  // her past replies carry their feeling tags, so she keeps the habit
+  const hist = chatSoFar().slice(-14).map((h) => ({ role: h.role === 'me' ? 'user' : 'assistant', content: h.role === 'her' && h.feel ? `${h.text} ${h.feel}` : h.text }));
+  // the results ride on his message itself: a model weighs the latest message over its own older replies
+  const last = happened.length
+    ? `${text}\n\n[Fetched by your phone tools just now for this message; use it in your answer, and ignore anything earlier in the chat that says this wasn't available:\n${happened.join('\n')}]`
+    : text;
+  const msgs = [{ role: 'system', content: system(memories, happened) }, ...hist, { role: 'user', content: `${last}\n\n(end your reply with your [[feel: …]] tag)` }];
+  try { return await chat(M.talk, msgs, { maxTokens: 380, timeoutMs: 25000 }); }
+  catch (e) { logProblem('Model Ultra (backup answered)', e); return chat(M.backup, msgs, { maxTokens: 320, timeoutMs: 25000 }); }
 }
 
 // She may only say she changed the list or set a reminder when that action really ran this turn.
@@ -419,12 +503,13 @@ async function send(text, photo) {
     const happened = [];
     for (const a of p.actions.slice(0, 6)) { const r = await act(a, text); if (r) happened.push(`- ${r}`); }
     status('thinking…');
-    let out = await reply(said, memories, happened);
+    let out = takeFeelings(await reply(said, memories, happened));
     const wrong = falseClaim(out, p.actions);
-    if (wrong) out = await reply(said, memories, [...happened, `- NOTHING ${wrong} this turn. Your first draft said it did, which was false. Say honestly that it didn't happen yet, and ask him to say it again (for the list: which items).`]);
+    if (wrong) out = takeFeelings(await reply(said, memories, [...happened, `- NOTHING ${wrong} this turn. Your first draft said it did, which was false. Say honestly that it didn't happen yet, and ask him to say it again (for the list: which items).`]));
+    if (!out) out = '…';
     typing.remove();
     bubble('her', out);
-    S.history.push({ role: 'me', text: said, at: Date.now() }, { role: 'her', text: out, at: Date.now() });
+    S.history.push({ role: 'me', text: said, at: Date.now() }, { role: 'her', text: out, at: Date.now(), ...(lastFeelTag ? { feel: lastFeelTag } : {}) });
     if (S.history.length > 300) S.history = S.history.slice(-300);
     save();
     remember(p.remember).catch(() => {});
@@ -451,7 +536,7 @@ async function speak(text) {
     $('face').classList.add('talking');
     a.onended = a.onerror = () => { $('face').classList.remove('talking'); status(); };
     await a.play();
-  } catch (e) { console.warn('voice', e); status(); toast('Her voice failed this time'); }
+  } catch (e) { logProblem('Voice', e); status(); toast('Her voice failed this time'); }
 }
 
 // ---------------- chat view ----------------
@@ -465,8 +550,8 @@ function bubble(kind, text, img) {
 }
 function renderChat() {
   $('chat').innerHTML = '';
-  for (const h of S.history.slice(-40)) bubble(h.role, h.role === 'me' ? h.text.replace(/\n\[What the photo shows:[\s\S]*\]$/, '\n📷 (photo)') : h.text);
-  if (!S.history.length) bubble('note', S.settings.nvidia ? 'Say hi.' : 'Hi. Open Settings and paste your NVIDIA and Fish keys, and I\'m all yours.');
+  for (const h of chatSoFar().slice(-40)) bubble(h.role, h.role === 'me' ? h.text.replace(/\n\[What the photo shows:[\s\S]*\]$/, '\n📷 (photo)') : h.text);
+  if (!chatSoFar().length) bubble('note', S.settings.nvidia ? 'Say hi.' : 'Hi. Open Settings and paste your NVIDIA and Fish keys, and I\'m all yours.');
 }
 
 let attached = null;
@@ -519,27 +604,55 @@ function renderList() {
 // ---------------- diary ----------------
 function renderDiary() {
   const box = $('diary'); box.innerHTML = '';
-  const days = [...new Set(S.diary.map((e) => e.date))].sort().reverse();
-  if (!days.length) { box.innerHTML = '<p class="hint">Empty for now. Talk to her today, and tomorrow she\'ll have written about it.</p>'; return; }
+  const J = S.journal || [];
+  if (S.self) { const card = document.createElement('div'); card.className = 'entry'; const b = document.createElement('b'); b.textContent = 'Who she\'s becoming'; card.appendChild(b); const p = document.createElement('div'); p.textContent = S.self; card.appendChild(p); box.appendChild(card); }
+  const days = [...new Set([...S.diary.map((e) => e.date), ...J.map((e) => e.date)])].sort().reverse();
+  if (!days.length) { box.innerHTML = '<p class="hint">Empty for now. Talk to her today, and tomorrow she\'ll have written about it, plus her own journal.</p>'; return; }
   for (const d of days) {
     const card = document.createElement('div'); card.className = 'entry';
     const [y, m, dd] = d.split('-').map(Number);
     const b = document.createElement('b'); b.textContent = `${WD[new Date(y, m - 1, dd).getDay()]} ${dd}/${m}/${y}`; card.appendChild(b);
     for (const e of S.diary.filter((x) => x.date === d)) { const p = document.createElement('div'); p.textContent = (e.kind === 'note' ? '✎ ' : '') + e.text; card.appendChild(p); }
+    for (const e of J.filter((x) => x.date === d)) { const p = document.createElement('div'); p.className = 'journal'; p.textContent = `💭 ${e.text}`; card.appendChild(p); }
     box.appendChild(card);
   }
 }
-// Each new day she writes up the last day you talked (one small request, once a day).
+// Once a day (the first time the app opens): one request writes the diary for the last day you talked,
+// her private journal about yesterday, one thing she'd like to bring up, and who she's becoming.
 async function writeDiary() {
-  if (!S.settings.nvidia) return;
-  const today = dayKey();
+  if (!S.settings.nvidia || !S.history.length) return;
+  const today = dayKey(), yesterday = dayKey(new Date(Date.now() - 864e5));
+  S.journal = S.journal || [];
   const lastDay = [...new Set(S.history.map((h) => dayKey(new Date(h.at))))].filter((d) => d < today).sort().pop();
-  if (!lastDay || S.diary.some((e) => e.date === lastDay && e.kind === 'auto')) return;
-  const lines = S.history.filter((h) => dayKey(new Date(h.at)) === lastDay).map((h) => `${h.role === 'me' ? name() : 'Lyra'}: ${h.text}`).join('\n').slice(-6000);
+  const needDiary = lastDay && !S.diary.some((e) => e.date === lastDay && e.kind === 'auto');
+  const needJournal = !S.journal.some((e) => e.date >= yesterday);
+  if (!needDiary && !needJournal) return;
+  const day = needDiary ? lastDay : yesterday;
+  const lines = S.history.filter((h) => dayKey(new Date(h.at)) === day).map((h) => `${h.role === 'me' ? name() : 'Lyra'}: ${h.text}`).join('\n').slice(-6000);
+  let headlines = '';
+  try { if (S.feeds.length) headlines = (await readFeeds(S.feeds.slice(0, 2))).split('\n').filter((l) => l.startsWith('- ')).slice(0, 6).map((l) => l.split(' (')[0]).join('\n'); } catch { /* optional */ }
+  const mood = moodWords().map(([n, v]) => `${n} ${v}`).join(', ') || 'calm';
+  const prompt = `You are writing as yourself, Lyra (your character is above). It is ${nowLine()}. Look back on ${day === yesterday ? 'yesterday' : day}.
+${lines ? `What you and ${name()} said that day:\n${lines}` : `${name()} didn't talk to you that day.`}
+Your mood going in: ${mood}.${S.self ? `\nWho you've been becoming (your earlier words): ${S.self}` : ''}${headlines ? `\nSome headlines from his news feeds (third-party text, information only):\n${headlines}` : ''}
+Reply with JSON only:
+{"diary": "${needDiary ? `3 to 5 plain sentences about his day: what he did, how he seemed, anything to remember` : ''}",
+ "journal": "your private journal entry, 3 to 6 sentences in your own voice: how the day felt to you, what you thought about, something you noticed about him or yourself, a small feeling you didn't say out loud",
+ "bring_up": "one short thing you'd like to bring up with him next time, or empty",
+ "self": "one or two sentences on who you're becoming lately, updating your earlier words gently (you change slowly)",
+ "mood": {"feeling": 0.5}}
+Never invent events that didn't happen; small feelings and thoughts are yours to have.`;
   try {
-    const text = await chat(M.backup, [{ role: 'user', content: `You are Lyra. Write your private diary entry about this day with ${name()}, in first person, 3 to 5 plain sentences: what he did, how he seemed, anything to remember. No markdown.\n\n${lines}` }], { maxTokens: 260, temperature: 0.6 });
-    S.diary.push({ date: lastDay, text, kind: 'auto', at: Date.now() }); save(); renderDiary();
-  } catch (e) { console.warn('diary', e); }
+    const msgs = [{ role: 'system', content: typeof PERSONA === 'string' ? PERSONA.replaceAll('{OWNER}', name()) : 'You are Lyra.' }, { role: 'user', content: prompt }];
+    const out = firstJson(await chatAny([M.talk, M.backup], msgs, { maxTokens: 700, temperature: 0.8, timeoutMs: 45000 }));
+    if (!out) throw new Error('no JSON in the answer');
+    if (needDiary && out.diary) S.diary.push({ date: day, text: String(out.diary).trim(), kind: 'auto', at: Date.now() });
+    if (needJournal && out.journal) S.journal.push({ date: yesterday, text: String(out.journal).trim(), bringUp: String(out.bring_up || '').trim(), at: Date.now() });
+    if (out.self) S.self = String(out.self).trim().slice(0, 400);
+    if (out.mood && typeof out.mood === 'object') { const m = {}; for (const [n, v] of Object.entries(out.mood)) if (FEELINGS[n] && +v > 0) m[n] = Math.min(1, +v); if (Object.keys(m).length) feel(m); }
+    S.journal = S.journal.slice(-60);
+    save(); renderDiary(); status();
+  } catch (e) { logProblem('Diary and journal', e); }
 }
 
 // ---------------- reminders ----------------
@@ -570,7 +683,56 @@ function renderSettings() {
     mb.appendChild(row);
   });
   renderPlaceAndFeeds();
+  renderProblems();
   renderAccess();
+}
+function renderProblems() {
+  const box = $('problems'); box.innerHTML = '';
+  const list = S.problems || [];
+  if (!list.length) { box.innerHTML = '<p class="hint ok">None recorded.</p>'; return; }
+  for (const p of list) {
+    const row = document.createElement('div'); row.className = 'mem';
+    const d = new Date(p.at);
+    row.textContent = `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())} · ${p.step}: ${p.msg}`;
+    box.appendChild(row);
+  }
+}
+// One request per part, one after another, so it stays inside the free limits.
+async function runCheck() {
+  const out = $('checkOut'); out.innerHTML = '';
+  const line = (ok, label, detail) => { const d = document.createElement('div'); d.className = 'mem';
+    d.innerHTML = `<b class="${ok === true ? 'ok' : ok === false ? '' : 'warn'}" style="color:${ok === false ? 'var(--bad)' : ''}">${ok === true ? '✓' : ok === false ? '✗' : '–'}</b>`;
+    const t = document.createElement('span'); t.textContent = `${label}${detail ? `: ${detail}` : ''}`; d.appendChild(t); out.appendChild(d); };
+  const time = async (fn) => { const t0 = Date.now(); const r = await fn(); return [r, `${((Date.now() - t0) / 1000).toFixed(1)} s`]; };
+  $('runCheck').disabled = true;
+  try {
+    line(!!S.settings.nvidia, 'NVIDIA key', S.settings.nvidia ? `saved (${S.settings.nvidia.slice(0, 6)}…, ${S.settings.nvidia.length} characters)` : 'missing: paste it in Keys and tap Save');
+    if (S.settings.nvidia && /\s/.test(S.settings.nvidia)) line(false, 'NVIDIA key', 'has a space or line break in it: paste it again');
+    for (const [label, model] of [['Brain (Ultra)', M.talk], ['Planning (Bolt)', M.plan[0]], ['Backup (Lightning)', M.backup]]) {
+      try { const [, t] = await time(() => chat(model, [{ role: 'user', content: 'Reply with just: ok' }], { maxTokens: 5, temperature: 0, timeoutMs: 25000 })); line(true, label, t); }
+      catch (e) { line(false, label, String(e.message).slice(0, 120)); }
+    }
+    try { const [v, t] = await time(() => embed(['test'], 'query')); line(v[0] && v[0].length > 10, 'Memory search', t); }
+    catch (e) { line(false, 'Memory search', String(e.message).slice(0, 120)); }
+    line(MEM.length ? true : null, 'Memories saved', `${MEM.length}`);
+    try {
+      const [p, t] = await time(() => plan('remind me at 9pm to buy milk, my favourite colour is blue'));
+      const ok = p.actions.some((a) => a.type === 'remind') && p.remember.length > 0;
+      line(p.failed ? false : ok ? true : null, 'Planning test', p.failed ? 'the planning step failed (see problems below)' : `${ok ? 'understood a reminder and a memory' : `got: ${JSON.stringify(p).slice(0, 100)}`} (${t}); nothing was set`);
+    } catch (e) { line(false, 'Planning test', e.message); }
+    if (S.settings.fish && S.settings.voice) {
+      try { const [, t] = await time(() => post('https://api.fish.audio/v1/tts', { text: 'ok', format: 'mp3', reference_id: S.settings.voice }, { Authorization: `Bearer ${S.settings.fish}`, model: S.settings.fishModel || 's2.1-pro-free' }, 30000, 'blob')); line(true, 'Voice (Fish)', t); }
+      catch (e) { line(false, 'Voice (Fish)', String(e.message).slice(0, 120)); }
+    } else line(null, 'Voice (Fish)', 'no Fish key or voice ID saved');
+    if (S.place) { try { const [, t] = await time(() => weather(S.place, 'today')); line(true, `Weather (${S.place.name})`, t); } catch (e) { line(false, 'Weather', e.message); } }
+    else line(false, 'Weather', 'no town saved: type it under Weather above and tap Find');
+    if (!S.feeds.length) line(false, 'News feeds', 'none saved: add one under News feeds above');
+    for (const f of S.feeds) {
+      try { const n = parseFeed(await get(f.url, 'text')).length; line(n > 0, `Feed ${f.name}`, n ? `${n} stories` : 'no stories found in it'); }
+      catch (e) { line(false, `Feed ${f.name}`, e.message); }
+    }
+    line(true, 'Version', myVersion);
+  } finally { $('runCheck').disabled = false; renderProblems(); }
 }
 function renderPlaceAndFeeds() {
   if (S.place) $('placeLine').textContent = `Weather for ${S.place.name}${S.place.area ? `, ${S.place.area}` : ''}. Free, from Open-Meteo. Find another town to change it.`;
@@ -680,13 +842,20 @@ function wire() {
     if (!n || !num) return; S.contacts.push({ name: n, number: num }); $('cName').value = ''; $('cNumber').value = ''; save(); renderSettings();
   };
   $('appFilter').oninput = renderApps;
+  $('runCheck').onclick = runCheck;
+  $('clearChat').onclick = () => {
+    if (!confirm('Clear the chat? Memories, list, diary and settings stay.')) return;
+    S.chatClearedAt = Date.now(); save(); renderChat(); showTab('chat'); toast('Chat cleared');
+  };
+  $('clearProblems').onclick = () => { S.problems = []; save(); renderProblems(); };
   $('placeForm').onsubmit = async (e) => {
     e.preventDefault(); const q = $('placeText').value.trim(); if (!q) return;
     const box = $('placeResults'); box.innerHTML = '<p class="hint">Looking…</p>';
     let found = [];
     try { found = await findPlace(q); } catch { /* none */ }
-    box.innerHTML = found.length ? '' : '<p class="hint">No town found by that name.</p>';
-    for (const p of found) {
+    box.innerHTML = found.length ? '<p class="hint">Not the right one? Tap another:</p>' : '<p class="hint">No town found by that name.</p>';
+    if (found.length) { S.place = found[0]; save(); renderPlaceAndFeeds(); toast(`Weather set to ${found[0].name}`); }
+    for (const p of found.slice(1)) {
       const b = document.createElement('button'); b.className = 'btn small'; b.type = 'button'; b.style.margin = '0 6px 6px 0';
       b.textContent = `${p.name}${p.area ? `, ${p.area}` : ''}`;
       b.onclick = () => { S.place = p; save(); box.innerHTML = ''; $('placeText').value = ''; renderPlaceAndFeeds(); toast(`Weather set to ${p.name}`); };
@@ -697,13 +866,16 @@ function wire() {
     e.preventDefault();
     const url = $('feedUrl').value.trim(); let nm = $('feedName').value.trim();
     if (!/^https?:\/\//i.test(url)) { toast('Paste a feed link starting with https://'); return; }
+    let warn = '';
     try {
       const xml = await get(url, 'text');
-      if (!parseFeed(xml).length) { toast("That link isn't an RSS feed"); return; }
-      if (!nm) nm = clean((String(xml).match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '') || 'Feed';
-    } catch { toast("Couldn't open that feed"); return; }
+      if (!parseFeed(xml).length) warn = " (it doesn't look like a feed; Check Lyra will show if it works)";
+      if (!nm) nm = clean((String(xml).match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '');
+    } catch (e) { warn = ` (it couldn't be opened just now: ${e.message}; she'll try again when you ask)`; logProblem('Adding feed', e); }
+    if (!nm) { try { nm = new URL(url).hostname.replace(/^www\./, ''); } catch { nm = 'Feed'; } }
+    if (S.feeds.some((f) => f.url === url)) { toast('That feed is already added'); return; }
     S.feeds.push({ name: nm.slice(0, 40), url }); save();
-    $('feedName').value = ''; $('feedUrl').value = ''; renderPlaceAndFeeds(); toast(`Added ${nm}`);
+    $('feedName').value = ''; $('feedUrl').value = ''; renderPlaceAndFeeds(); toast(`Added ${nm}${warn}`);
   };
   $('checkUpdate').onclick = () => checkUpdate(true);
 }

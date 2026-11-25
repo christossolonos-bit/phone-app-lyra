@@ -35,7 +35,7 @@
 
 <section class="tab" id="tab-diary" hidden>
   <h2>Diary</h2>
-  <p class="hint">Lyra writes a short entry about each day you talk, plus anything you ask her to write down.</p>
+  <p class="hint">Her notes about your days (and anything you ask her to write down), and her own private journal (💭): how she felt, what she thought about.</p>
   <div id="diary"></div>
 </section>
 
@@ -86,9 +86,22 @@
     <form class="row" id="feedForm"><input id="feedName" placeholder="Name"><input id="feedUrl" placeholder="https://…/rss" inputmode="url" autocomplete="off"><button class="btn">Add</button></form>
   </div>
   <div class="card">
+    <h3>Chat</h3>
+    <p class="hint">Clears the conversation on screen and her short-term context. Memories, list, diary, reminders and settings stay.</p>
+    <button class="btn" id="clearChat">Clear chat</button>
+  </div>
+  <div class="card">
     <h3>Memory</h3>
     <p class="hint" id="memCount"></p>
     <div id="memories"></div>
+  </div>
+  <div class="card">
+    <h3>Check Lyra</h3>
+    <p class="hint">Tests each part of her (brain, planning, memory, voice, weather, feeds) and shows what's working. Uses a few free requests.</p>
+    <button class="btn" id="runCheck">Run check</button>
+    <div id="checkOut"></div>
+    <h3 style="margin-top:12px">Recent problems <button class="btn small" id="clearProblems">Clear</button></h3>
+    <div id="problems"></div>
   </div>
   <div class="card">
     <h3>Updates</h3>
@@ -107,6 +120,7 @@
 <div class="toast" id="toast"></div>
 <audio id="audio"></audio>
 <script src="capacitor-core.js"></script>
+<script src="persona.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
