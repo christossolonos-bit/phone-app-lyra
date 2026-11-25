@@ -129,18 +129,22 @@ Action types (use only what he actually asks for; most messages need none):
 {"type":"remind","text":"what to remind","when":"YYYY-MM-DD HH:MM"} (24-hour local time; "when":"" if he gave no time)
 {"type":"cancel_reminder","match":"words"}
 {"type":"shopping_add","items":["ham","bread"]}  {"type":"shopping_remove","items":[...]}  {"type":"shopping_done","items":[...]}  {"type":"shopping_list"}
+(shopping_done = cross off / tick off / bought / got it. Use the item names exactly as they are on the list. "them", "it", "those" mean the items just talked about; "everything" or "all" means every item on the list, written out.)
+Shopping list now: ${S.list.filter((x) => !x.done).map((x) => x.text).join(', ') || 'empty'}
 {"type":"diary_write","text":"what to write"}  {"type":"diary_read","date":"YYYY-MM-DD or empty"}
 {"type":"call","name":"who"} (contacts: ${contacts})
 {"type":"open_app","name":"app"} (approved apps: ${apps})
 {"type":"messages","app":"app name or empty"} (any question about his messages, texts, chats or notifications, e.g. "any new messages?", "did anyone text me?")
 "remember": lasting facts about him or his life worth keeping (preferences, people, plans), each a short sentence about him in the third person, e.g. "His sister Anna loves sushi." [] if none. Never store passwords, codes or card numbers.
-Message: """${text}"""`;
+${S.history.length ? `The last few messages (for "them", "it", "that"):\n${S.history.slice(-4).map((h) => `${h.role === 'me' ? name() : 'Lyra'}: ${h.text.slice(0, 300)}`).join('\n')}\n` : ''}Message: """${text}"""`;
 }
 async function plan(text) {
   try {
     const out = await chatAny(M.plan, [{ role: 'user', content: planPrompt(text) }], { maxTokens: 350, temperature: 0, timeoutMs: 12000 });
     const j = firstJson(out) || {};
     const actions = Array.isArray(j.actions) ? j.actions : [];
+    // "cross off" / "tick off" / "bought" means ticked, not deleted (the small model mixes them up)
+    if (/\b(cross|tick|check|mark)(ed)?\b.*\boff\b|\b(bought|got)\b/i.test(text)) actions.forEach((a) => { if (a.type === 'shopping_remove') a.type = 'shopping_done'; });
     // the small model sometimes misses a plain "any messages?": catch it here
     if (!actions.some((a) => a.type === 'messages') && /\b(any|new|my|read|check)\b.*\b(messages?|texts?|notifications?|chats?)\b|\bdid (anyone|anybody) (text|message|write)/i.test(text)) actions.push({ type: 'messages', app: '' });
     return { actions, remember: Array.isArray(j.remember) ? j.remember : [] };
@@ -202,7 +206,10 @@ async function act(a, userText) {
     case 'shopping_remove':
     case 'shopping_done': {
       const hit = [], miss = [];
-      for (const it of a.items || []) {
+      let items = (a.items || []).map((x) => String(x).trim()).filter(Boolean);
+      if (!items.length || items.some((x) => /^(all|everything|all of them|the whole list)$/i.test(x))) items = S.list.filter((x) => !x.done).map((x) => x.text);
+      if (!items.length) return 'The shopping list is already empty; nothing changed.';
+      for (const it of items) {
         const x = findItem(it); if (!x) { miss.push(it); continue; }
         if (a.type === 'shopping_done') x.done = true; else S.list = S.list.filter((y) => y !== x);
         hit.push(x.text);
@@ -268,6 +275,19 @@ async function reply(text, memories, happened) {
   catch (e) { console.warn('Ultra failed, backup answers', e.message); return chat(M.backup, msgs, { maxTokens: 250, timeoutMs: 25000 }); }
 }
 
+// She may only say she changed the list or set a reminder when that action really ran this turn.
+const CLAIMS = [
+  { re: /\b(crossed|ticked|checked|marked|taken|took)\b[^.?!]*\boff\b|\b(added|removed|deleted)\b[^.?!]*\b(list|it|them)\b|\boff (your|the) (shopping )?list\b|\b(it'?s|they'?re|all) (done|gone|sorted)\b/i, kind: 'shopping_', what: 'was changed on the shopping list' },
+  { re: /\b(i'?ll|i will|gonna) (remind|ping|nudge) you\b|\breminder('?s| is)? (set|on|done)\b|\bset (a|the|your) reminder\b/i, kind: 'remind', what: 'reminder was set' },
+];
+function falseClaim(out, actions) {
+  const tried = actions.map((a) => String(a.type || ''));
+  // sentence by sentence, so "I added it to your diary" isn't read as a shopping-list claim
+  const sentences = String(out).split(/(?<=[.?!])\s+/).filter((s) => !(/diary|calendar/i.test(s)));
+  const c = CLAIMS.find((x) => sentences.some((s) => x.re.test(s)) && !tried.some((t) => t.startsWith(x.kind)));
+  return c ? c.what : '';
+}
+
 let busy = false;
 async function send(text, photo) {
   text = (text || '').trim();
@@ -287,7 +307,9 @@ async function send(text, photo) {
     const happened = [];
     for (const a of p.actions.slice(0, 6)) { const r = await act(a, text); if (r) happened.push(`- ${r}`); }
     status('thinking…');
-    const out = await reply(said, memories, happened);
+    let out = await reply(said, memories, happened);
+    const wrong = falseClaim(out, p.actions);
+    if (wrong) out = await reply(said, memories, [...happened, `- NOTHING ${wrong} this turn. Your first draft said it did, which was false. Say honestly that it didn't happen yet, and ask him to say it again (for the list: which items).`]);
     typing.remove();
     bubble('her', out);
     S.history.push({ role: 'me', text: said, at: Date.now() }, { role: 'her', text: out, at: Date.now() });
