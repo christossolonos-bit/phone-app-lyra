@@ -73,6 +73,19 @@
     <div id="apps"></div>
   </div>
   <div class="card">
+    <h3>Weather</h3>
+    <p class="hint" id="placeLine">Your town, so "what's the weather?" just works. Free, from Open-Meteo, with no account.</p>
+    <form class="row" id="placeForm"><input id="placeText" placeholder="Town" autocomplete="off"><button class="btn">Find</button></form>
+    <div id="placeResults"></div>
+  </div>
+  <div class="card">
+    <h3>News feeds</h3>
+    <p class="hint">Any RSS feed: news sites, blogs, YouTube channels, webtoon series. Ask "what's the news?" or "anything new on The Verge?". Tap one to add it, or paste a feed link.</p>
+    <div class="row" id="feedPresets" style="flex-wrap:wrap"></div>
+    <ul class="list" id="feeds"></ul>
+    <form class="row" id="feedForm"><input id="feedName" placeholder="Name"><input id="feedUrl" placeholder="https://…/rss" inputmode="url" autocomplete="off"><button class="btn">Add</button></form>
+  </div>
+  <div class="card">
     <h3>Memory</h3>
     <p class="hint" id="memCount"></p>
     <div id="memories"></div>
