@@ -560,25 +560,54 @@ async function send(text, photo) {
 
 // ---------------- her voice (Fish) ----------------
 let speaking = 0;
-function stopVoice() { const a = $('audio'); a.pause(); a.removeAttribute('src'); $('face').classList.remove('talking'); }
+function stopVoice() { speaking++; const a = $('audio'); a.pause(); a.removeAttribute('src'); $('face').classList.remove('talking'); }
 // Resolves when she has finished speaking (hands-free mode waits for it before listening again).
 let lastSpoken = Promise.resolve();
 function speak(text) { return (lastSpoken = speakNow(text)); }
+// A long reply is spoken in sentence-sized pieces (1.3.1): the first piece is short so she starts quickly, and
+// each next piece is made while the one before plays, so there's no long wait for the whole reply.
+function voiceChunks(text) {
+  const sentences = String(text).replace(/\s+/g, ' ').trim().split(/(?<=[.!?…]["')\]]?)\s+/).filter(Boolean);
+  const out = []; let cur = '';
+  for (const s of sentences) {
+    if (cur && (cur.length + s.length) > (out.length ? 170 : 110)) { out.push(cur.trim()); cur = ''; }
+    cur += `${s} `;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out.slice(0, 10);
+}
+async function ttsClip(text) {
+  const data = await post('https://api.fish.audio/v1/tts', { text, format: 'mp3', latency: 'balanced', reference_id: S.settings.voice },
+    { Authorization: `Bearer ${S.settings.fish}`, model: S.settings.fishModel || 's2.1-pro-free' }, 45000, 'blob');
+  return typeof data === 'string' ? `data:audio/mpeg;base64,${data}` : URL.createObjectURL(data);
+}
+function playClip(src) {
+  const a = $('audio');
+  a.src = src;
+  const done = new Promise((res) => { a.onended = a.onerror = a.onpause = () => res(); });
+  return a.play().then(() => done);
+}
 async function speakNow(text) {
   if (!S.settings.voiceOn || !S.settings.fish || !S.settings.voice) return;
   const mine = ++speaking;
+  const parts = voiceChunks(text.slice(0, 1500));
+  if (!parts.length) return;
   try {
     status('speaking…');
-    const data = await post('https://api.fish.audio/v1/tts', { text: text.slice(0, 700), format: 'mp3', latency: 'balanced', reference_id: S.settings.voice },
-      { Authorization: `Bearer ${S.settings.fish}`, model: S.settings.fishModel || 's2.1-pro-free' }, 45000, 'blob');
-    if (mine !== speaking) return;
-    const a = $('audio');
-    a.src = typeof data === 'string' ? `data:audio/mpeg;base64,${data}` : URL.createObjectURL(data);
-    $('face').classList.add('talking');
-    const done = new Promise((res) => { a.onended = a.onerror = a.onpause = () => { $('face').classList.remove('talking'); status(); res(); }; });
-    await a.play();
-    await done;
-  } catch (e) { logProblem('Voice', e); status(); toast('Her voice failed this time'); }
+    // up to three pieces are being made at once, so the next is ready when the one before ends
+    const clips = []; let made = 0, played = 0;
+    const more = () => { while (made < parts.length && made < played + 3) { const c = ttsClip(parts[made++]); c.catch(() => {}); clips.push(c); } };
+    more();
+    for (let i = 0; i < parts.length; i++) {
+      const src = await clips[i];
+      if (mine !== speaking) return;
+      played = i + 1; more();
+      $('face').classList.add('talking');
+      await playClip(src);
+      if (mine !== speaking) return;
+    }
+  } catch (e) { logProblem('Voice', e); toast('Her voice failed this time'); }
+  finally { if (mine === speaking) { $('face').classList.remove('talking'); status(); } }
 }
 
 // ---------------- chat view ----------------
