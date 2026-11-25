@@ -23,7 +23,7 @@ const M = {
   embed: 'nvidia/nemotron-3.5-embed-1b',
 };
 const REPO = 'christossolonos-bit/phone-app-lyra';
-const MAX_MEM = 300;
+const MAX_MEM = 600;
 const $ = (id) => document.getElementById(id);
 
 // ---------------- storage ----------------
@@ -37,7 +37,7 @@ async function load() {
     const a = await Prefs.get({ key: 'lyra' });
     if (a.value) { const o = JSON.parse(a.value); S = { ...S, ...o, settings: { ...S.settings, ...(o.settings || {}) } }; }
     const b = await Prefs.get({ key: 'lyra.mem' });
-    if (b.value) MEM = JSON.parse(b.value);
+    if (b.value) { MEM = JSON.parse(b.value); upgradeMem(); }
   } catch (e) { console.warn('load', e); }
 }
 let saveTimer;
@@ -163,13 +163,33 @@ async function look(b64, mime, question) {
 
 // ---------------- memory ----------------
 const cos = (a, b) => { let d = 0, x = 0, y = 0; for (let i = 0; i < a.length; i++) { d += a[i] * b[i]; x += a[i] * a[i]; y += b[i] * b[i]; } return d / (Math.sqrt(x * y) || 1); };
+// Vectors are kept as 8-bit numbers in base64 (2 KB each instead of ~14 KB of JSON): plenty for finding
+// the right memory, and the same format the PC export uses.
+function quant(v) {
+  const n = Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1;
+  const b = new Uint8Array(v.length);
+  for (let i = 0; i < v.length; i++) b[i] = Math.max(-127, Math.min(127, Math.round((v[i] / n) * 127))) & 0xff;
+  let s = ''; for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode.apply(null, b.subarray(i, i + 8192));
+  return btoa(s);
+}
+const vecCache = new Map();
+function vecOf(m) {
+  if (!m.q) return null;
+  let v = vecCache.get(m.q);
+  if (!v) { const s = atob(m.q); v = new Float32Array(s.length); for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); v[i] = (c > 127 ? c - 256 : c) / 127; } vecCache.set(m.q, v); }
+  return v;
+}
+// older versions kept full number lists: shrink them once
+function upgradeMem() { let changed = false; for (const m of MEM) if (m.v) { m.q = quant(m.v); delete m.v; changed = true; } if (changed) saveMem(); }
+// a memory as she reads it, with how he felt and when, like on the PC
+const memLine = (m) => `${m.t}${m.feeling ? ` (he seemed ${m.feeling}${m.moment ? `, ${m.moment}` : ''})` : m.moment ? ` (${m.moment})` : ''}`;
 async function recall(text) {
   if (!MEM.length) return [];
-  if (MEM.length <= 12) return MEM.map((m) => m.t);
+  if (MEM.length <= 12) return MEM.map(memLine);
   try {
     const [q] = await embed([text], 'query');
-    return MEM.map((m) => ({ t: m.t, s: m.v ? cos(q, m.v) : 0 })).filter((m) => m.s >= 0.25).sort((a, b) => b.s - a.s).slice(0, 8).map((m) => m.t);
-  } catch (e) { logProblem('Memory search', e); return MEM.slice(-8).map((m) => m.t); }
+    return MEM.map((m) => ({ m, s: vecOf(m) ? cos(q, vecOf(m)) : 0 })).filter((x) => x.s >= 0.25).sort((a, b) => b.s - a.s).slice(0, 10).map((x) => memLine(x.m));
+  } catch (e) { logProblem('Memory search', e); return MEM.slice(-8).map(memLine); }
 }
 async function remember(facts) {
   facts = facts.map((f) => String(f).trim()).filter((f) => f.split(/\s+/).length >= 3 && f.length < 300);
@@ -177,12 +197,28 @@ async function remember(facts) {
   let vecs = [];
   try { vecs = await embed(facts, 'passage'); } catch (e) { logProblem('Memory save', e); /* kept without a vector */ }
   facts.forEach((t, i) => {
-    const v = vecs[i];
-    if (MEM.some((m) => m.t.toLowerCase() === t.toLowerCase() || (v && m.v && cos(v, m.v) > 0.93))) return;
-    MEM.push({ t, v, at: Date.now() });
+    const q = vecs[i] ? quant(vecs[i]) : null;
+    if (MEM.some((m) => m.t.toLowerCase() === t.toLowerCase() || (q && m.q && cos(vecOf({ q }), vecOf(m)) > 0.93))) return;
+    MEM.push({ t, q, at: Date.now() });
   });
   while (MEM.length > MAX_MEM) MEM.shift();
   saveMem();
+}
+// Memories exported from the PC Lyra (a lyra-memories.json file): added once, duplicates skipped.
+function importMemories(json) {
+  const data = JSON.parse(json);
+  if (data.kind !== 'lyra-memories' || !Array.isArray(data.memories)) throw new Error("That isn't a Lyra memories file");
+  let added = 0;
+  for (const x of data.memories) {
+    const t = String(x.t || '').trim(); if (!t) continue;
+    if (MEM.some((m) => m.t.toLowerCase() === t.toLowerCase())) continue;
+    MEM.push({ t, q: x.q || null, at: x.at || Date.now(), ...(x.feeling ? { feeling: String(x.feeling) } : {}), ...(x.moment ? { moment: String(x.moment) } : {}), ...(x.kind && x.kind !== 'fact' ? { kind: x.kind } : {}) });
+    added++;
+  }
+  MEM.sort((a, b) => a.at - b.at);
+  while (MEM.length > MAX_MEM) MEM.shift();
+  saveMem();
+  return added;
 }
 
 // ---------------- the plan step (small fast model, JSON) ----------------
@@ -523,7 +559,10 @@ async function send(text, photo) {
 // ---------------- her voice (Fish) ----------------
 let speaking = 0;
 function stopVoice() { const a = $('audio'); a.pause(); a.removeAttribute('src'); $('face').classList.remove('talking'); }
-async function speak(text) {
+// Resolves when she has finished speaking (hands-free mode waits for it before listening again).
+let lastSpoken = Promise.resolve();
+function speak(text) { return (lastSpoken = speakNow(text)); }
+async function speakNow(text) {
   if (!S.settings.voiceOn || !S.settings.fish || !S.settings.voice) return;
   const mine = ++speaking;
   try {
@@ -534,8 +573,9 @@ async function speak(text) {
     const a = $('audio');
     a.src = typeof data === 'string' ? `data:audio/mpeg;base64,${data}` : URL.createObjectURL(data);
     $('face').classList.add('talking');
-    a.onended = a.onerror = () => { $('face').classList.remove('talking'); status(); };
+    const done = new Promise((res) => { a.onended = a.onerror = a.onpause = () => { $('face').classList.remove('talking'); status(); res(); }; });
     await a.play();
+    await done;
   } catch (e) { logProblem('Voice', e); status(); toast('Her voice failed this time'); }
 }
 
@@ -571,10 +611,45 @@ async function takePhoto() {
   } catch (e) { if (!/cancel/i.test(e.message || '')) toast('No photo'); }
 }
 
-async function listen() {
+// ---------------- hands-free: a conversation, not single questions ----------------
+// Tap 🎧 once: she listens, answers, and listens again until you say bye or tap it off.
+let handsFree = false;
+const BYE = /^(ok(ay)?\s+)?(bye|bye bye|goodbye|good night|goodnight|stop listening|that'?s all|see you|later)\b/i;
+function setHandsFree(on, note) {
+  handsFree = on;
+  $('handsFree').classList.toggle('on', on);
+  if (!on) { try { Speech.stop(); } catch { /* not listening */ } status(); if (note) toast(note); }
+}
+async function handsFreeLoop() {
   try {
     const perm = await Speech.requestPermissions();
-    if (perm.speechRecognition && perm.speechRecognition !== 'granted') { toast('Lyra needs the microphone for this'); return; }
+    if (perm.speechRecognition === 'denied') { toast('Lyra needs the microphone for this'); setHandsFree(false); return; }
+  } catch { /* checked again by start */ }
+  let misses = 0;
+  while (handsFree) {
+    while (busy && handsFree) await new Promise((r) => setTimeout(r, 200));
+    if (!handsFree) break;
+    status('listening…'); $('mic').classList.add('listening');
+    let said = '';
+    try { const r = await Speech.start({ language: navigator.language || 'en-US', maxResults: 1, popup: false, partialResults: false }); said = (r.matches?.[0] || '').trim(); }
+    catch { said = ''; }
+    $('mic').classList.remove('listening');
+    if (!handsFree) break;
+    if (!said) { if (++misses >= 3) setHandsFree(false, 'Hands-free is off (I heard nothing). Tap 🎧 to talk again.'); continue; }
+    misses = 0;
+    const p = attached; attached = null; showAttached();
+    await send(said, p);
+    await lastSpoken;
+    if (BYE.test(said)) { setHandsFree(false, 'Hands-free is off'); break; }
+    await new Promise((r) => setTimeout(r, 250)); // let her voice fade before the mic opens
+  }
+}
+
+async function listen() {
+  if (handsFree) { setHandsFree(false, 'Hands-free is off'); return; }
+  try {
+    const perm = await Speech.requestPermissions();
+    if (perm.speechRecognition === 'denied') { toast('Lyra needs the microphone for this'); return; }
     stopVoice(); $('mic').classList.add('listening'); status('listening…');
     const r = await Speech.start({ language: navigator.language || 'en-US', maxResults: 1, popup: true, partialResults: false, prompt: 'Talk to Lyra' });
     const said = r.matches?.[0];
@@ -824,6 +899,9 @@ function wire() {
   document.querySelectorAll('nav button').forEach((b) => { b.onclick = () => showTab(b.dataset.tab); });
   $('form').onsubmit = (e) => { e.preventDefault(); const t = $('text').value; const p = attached; $('text').value = ''; attached = null; showAttached(); send(t, p); };
   $('mic').onclick = listen;
+  // tap her face at the top to show or hide her 3D self
+  $('face').onclick = () => { S.settings.avatarOn = !(S.settings.avatarOn !== false); save(); paintAvatar(); };
+  $('handsFree').onclick = () => { if (handsFree) setHandsFree(false, 'Hands-free is off'); else { setHandsFree(true); stopVoice(); toast('Hands-free: just talk. Say "bye" or tap 🎧 to stop.'); handsFreeLoop(); } };
   $('photo').onclick = takePhoto;
   $('voiceToggle').onclick = () => { S.settings.voiceOn = !S.settings.voiceOn; save(); paintVoice(); if (!S.settings.voiceOn) stopVoice(); toast(S.settings.voiceOn ? 'Her voice is on' : 'Text only'); };
   $('listForm').onsubmit = (e) => {
@@ -843,6 +921,13 @@ function wire() {
   };
   $('appFilter').oninput = renderApps;
   $('runCheck').onclick = runCheck;
+  $('importMem').onclick = () => $('memFile').click();
+  $('memFile').onchange = async () => {
+    const f = $('memFile').files[0]; if (!f) return;
+    try { const n = importMemories(await f.text()); toast(n ? `She now remembers ${n} more things about you` : 'She already had all of those'); renderSettings(); }
+    catch (e) { toast(e.message || "Couldn't read that file"); }
+    $('memFile').value = '';
+  };
   $('clearChat').onclick = () => {
     if (!confirm('Clear the chat? Memories, list, diary and settings stay.')) return;
     S.chatClearedAt = Date.now(); save(); renderChat(); showTab('chat'); toast('Chat cleared');
@@ -879,12 +964,13 @@ function wire() {
   };
   $('checkUpdate').onclick = () => checkUpdate(true);
 }
+function paintAvatar() { const on = S.settings.avatarOn !== false; $('stage').hidden = !on; if (on && window.lyraAvatar) setTimeout(() => window.lyraAvatar.resize(), 50); }
 const paintVoice = () => { $('voiceToggle').textContent = S.settings.voiceOn ? '🔊' : '🔇'; };
 
 async function start() {
   if (!Cap || !Prefs) { document.body.innerHTML = '<p style="padding:20px">This page runs inside the Lyra app.</p>'; return; }
   await load();
-  wire(); paintVoice(); renderChat(); renderList(); renderDiary(); renderReminders();
+  wire(); paintVoice(); paintAvatar(); renderChat(); renderList(); renderDiary(); renderReminders();
   try { myVersion = (await AppP.getInfo()).version; } catch { /* web */ }
   $('versionLine').textContent = `This is Lyra ${myVersion}. Updates come from GitHub; you tap Update and install.`;
   if (native) {

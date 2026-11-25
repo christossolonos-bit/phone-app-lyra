@@ -19,6 +19,10 @@ npx cap sync android
 cd android && gradlew.bat assembleDebug
 ```
 
+## Her 3D face
+The avatar (www/avatar.js, three.js 0.160 in www/lib) loads `www/models/lyra.glb`, which is not in this repo.
+Copy it from the main project before building: `customizer/models/lyra.glb` -> `www/models/lyra.glb`.
+
 ## Updates
 The app checks this repo's releases for a tag like `mobile-v1.0.1` with an `.apk` asset, and offers an Update button.
 Bump `versionCode` and `versionName` in `android/app/build.gradle` before building a new release.
