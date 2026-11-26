@@ -82,3 +82,6 @@ input { width:100%; background:var(--bg); color:var(--text); border:1px solid va
 .stage.pip::after { display:none; }
 #videoCall.on { background:var(--bad); color:#fff; }
 .msg.me img { max-width:160px; }
+
+.more { margin:4px 0 8px; }
+.more summary { color:var(--accent); font-size:13px; margin-bottom:8px; cursor:pointer; }

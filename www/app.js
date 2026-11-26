@@ -22,6 +22,21 @@ const M = {
   eyes: ['nvidia/nemotron-3-nano-omni-30b-a3b-reasoning', 'nvidia/nemotron-3.5-super-vl-120b-a12b'],
   embed: 'nvidia/nemotron-3.5-embed-1b',
 };
+// The models he can change in Settings (1.3.2); an empty box keeps the default.
+const DEFAULT_MODELS = { talk: M.talk, backup: M.backup, eyes: [...M.eyes] };
+// "https://build.nvidia.com/nvidia/foo/modelcard" or " nvidia/foo " -> "nvidia/foo"
+function cleanModel(v) {
+  let m = String(v || '').trim();
+  m = m.replace(/^https?:\/\//i, '').replace(/^(build|integrate\.api)\.nvidia\.com\//i, '').replace(/[?#].*$/, '');
+  m = m.split('/').filter(Boolean).slice(0, 2).join('/');
+  return /^[\w.-]+\/[\w.:-]+$/.test(m) ? m : '';
+}
+function applyModels() {
+  M.talk = S.settings.model || DEFAULT_MODELS.talk;
+  M.backup = S.settings.backupModel || DEFAULT_MODELS.backup;
+  M.eyes = S.settings.eyesModel ? [S.settings.eyesModel, ...DEFAULT_MODELS.eyes.filter((x) => x !== S.settings.eyesModel)] : [...DEFAULT_MODELS.eyes];
+}
+const shortModel = (m) => String(m).split('/').pop();
 const REPO = 'christossolonos-bit/phone-app-lyra';
 const MAX_MEM = 600;
 const $ = (id) => document.getElementById(id);
@@ -506,7 +521,7 @@ async function reply(text, memories, happened) {
     : text;
   const msgs = [{ role: 'system', content: system(memories, happened) }, ...hist, { role: 'user', content: `${last}\n\n(end your reply with your [[feel: …]] tag)` }];
   try { return await chat(M.talk, msgs, { maxTokens: 380, timeoutMs: 25000 }); }
-  catch (e) { logProblem('Model Ultra (backup answered)', e); return chat(M.backup, msgs, { maxTokens: 320, timeoutMs: 25000 }); }
+  catch (e) { logProblem(`Model ${shortModel(M.talk)} (backup answered)`, e); return chat(M.backup, msgs, { maxTokens: 320, timeoutMs: 25000 }); }
 }
 
 // She may only say she changed the list or set a reminder when that action really ran this turn.
@@ -817,7 +832,7 @@ function renderReminders() {
 // ---------------- settings ----------------
 function renderSettings() {
   const s = S.settings;
-  $('sName').value = s.name; $('sNvidia').value = s.nvidia; $('sFish').value = s.fish; $('sVoice').value = s.voice; $('sFishModel').value = s.fishModel;
+  $('sName').value = s.name; $('sNvidia').value = s.nvidia; $('sModel').value = s.model || ''; $('sBackup').value = s.backupModel || ''; $('sEyes').value = s.eyesModel || ''; $('sFish').value = s.fish; $('sVoice').value = s.voice; $('sFishModel').value = s.fishModel;
   const cl = $('contacts'); cl.innerHTML = '';
   S.contacts.forEach((c, i) => cl.appendChild(li(`${c.name} · ${c.number}`, { onX: () => { S.contacts.splice(i, 1); save(); renderSettings(); } })));
   $('memCount').textContent = MEM.length ? `She remembers ${MEM.length} things. Tap × to make her forget one.` : 'Nothing yet. She saves facts about you as you talk.';
@@ -855,7 +870,7 @@ async function runCheck() {
   try {
     line(!!S.settings.nvidia, 'NVIDIA key', S.settings.nvidia ? `saved (${S.settings.nvidia.slice(0, 6)}…, ${S.settings.nvidia.length} characters)` : 'missing: paste it in Keys and tap Save');
     if (S.settings.nvidia && /\s/.test(S.settings.nvidia)) line(false, 'NVIDIA key', 'has a space or line break in it: paste it again');
-    for (const [label, model] of [['Brain (Ultra)', M.talk], ['Planning (Bolt)', M.plan[0]], ['Backup (Lightning)', M.backup]]) {
+    for (const [label, model] of [[`Brain (${shortModel(M.talk)})`, M.talk], ['Planning (Bolt)', M.plan[0]], [`Backup (${shortModel(M.backup)})`, M.backup]]) {
       try { const [, t] = await time(() => chat(model, [{ role: 'user', content: 'Reply with just: ok' }], { maxTokens: 5, temperature: 0, timeoutMs: 25000 })); line(true, label, t); }
       catch (e) { line(false, label, String(e.message).slice(0, 120)); }
     }
@@ -988,7 +1003,14 @@ function wire() {
   $('clearBought').onclick = () => { S.list = S.list.filter((x) => !x.done); save(); renderList(); };
   $('saveKeys').onclick = () => {
     Object.assign(S.settings, { name: $('sName').value.trim(), nvidia: $('sNvidia').value.trim(), fish: $('sFish').value.trim(), voice: $('sVoice').value.trim(), fishModel: $('sFishModel').value.trim() || 's2.1-pro-free' });
-    save(); toast('Saved on this phone');
+    const bad = [];
+    for (const [box, key] of [['sModel', 'model'], ['sBackup', 'backupModel'], ['sEyes', 'eyesModel']]) {
+      const raw = $(box).value.trim(), m = cleanModel(raw);
+      if (raw && !m) bad.push(raw);
+      S.settings[key] = m; $(box).value = m;
+    }
+    applyModels(); save();
+    toast(bad.length ? `Saved, but "${bad[0]}" isn't a model name (like nvidia/…), so the default is used` : `Saved on this phone. Brain: ${shortModel(M.talk)}`);
   };
   $('sName').onchange = () => { S.settings.name = $('sName').value.trim(); save(); };
   $('contactForm').onsubmit = (e) => {
@@ -1046,6 +1068,7 @@ const paintVoice = () => { $('voiceToggle').textContent = S.settings.voiceOn ? '
 async function start() {
   if (!Cap || !Prefs) { document.body.innerHTML = '<p style="padding:20px">This page runs inside the Lyra app.</p>'; return; }
   await load();
+  applyModels();
   wire(); paintVoice(); paintAvatar(); renderChat(); renderList(); renderDiary(); renderReminders();
   try { myVersion = (await AppP.getInfo()).version; } catch { /* web */ }
   $('versionLine').textContent = `This is Lyra ${myVersion}. Updates come from GitHub; you tap Update and install.`;

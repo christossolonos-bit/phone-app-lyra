@@ -66,6 +66,12 @@
   <div class="card">
     <h3>Keys <span class="hint">(kept only on this phone)</span></h3>
     <label>NVIDIA API key<input id="sNvidia" type="password" autocomplete="off" placeholder="nvapi-…"></label>
+    <label>Brain model (writes her replies)<input id="sModel" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="nvidia/nemotron-3-ultra-550b-a55b"></label>
+    <details class="more"><summary>More models (optional)</summary>
+      <label>Backup model (when the brain is slow or down)<input id="sBackup" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="nvidia/nemotron-3.5-lightning-30b-a3b"></label>
+      <label>Eyes model (photos and video calls)<input id="sEyes" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"></label>
+    </details>
+    <p class="hint">Copy a model name from build.nvidia.com (like nvidia/…, or the page link). Leave a box empty to use the default shown in grey.</p>
     <label>Fish Audio API key<input id="sFish" type="password" autocomplete="off"></label>
     <label>Her Fish voice ID<input id="sVoice" autocomplete="off"></label>
     <label>Fish voice model<input id="sFishModel" autocomplete="off" placeholder="s2.1-pro-free"></label>
