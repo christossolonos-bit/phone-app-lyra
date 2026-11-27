@@ -74,6 +74,18 @@ public class LyraPhonePlugin extends Plugin {
         call.resolve();
     }
 
+    // The screen stays on while a hands-free or video call is running (1.3.3): when it turned off, Android paused
+    // the app and the microphone and camera stopped with it. Off again when the call ends.
+    @PluginMethod
+    public void keepAwake(PluginCall call) {
+        boolean on = Boolean.TRUE.equals(call.getBoolean("on", false));
+        getActivity().runOnUiThread(() -> {
+            if (on) getActivity().getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            else getActivity().getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            call.resolve();
+        });
+    }
+
     @PluginMethod
     public void openUrl(PluginCall call) {
         Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(call.getString("url", "")));

@@ -665,7 +665,10 @@ function setHandsFree(on, note) {
   handsFree = on;
   $('handsFree').classList.toggle('on', on);
   if (!on) { try { Speech.stop(); } catch { /* not listening */ } status(); if (note) toast(note); if (videoCall) endVideoCall(); }
+  stayAwake();
 }
+// the screen stays on while she's listening or on a video call (a dark screen pauses the app, mic and camera)
+function stayAwake() { if (native) Phone.keepAwake({ on: Boolean(handsFree || videoCall) }).catch(() => {}); }
 
 // ---------------- video call: she sees through your camera when you speak ----------------
 // Not a stream: NVIDIA's free models read pictures, not video. Each time you finish a sentence (or tap Look),
@@ -693,6 +696,7 @@ async function startVideoCall() {
   $('call').appendChild($('stage')); $('stage').classList.add('pip'); $('stage').hidden = false;
   setTimeout(() => window.lyraAvatar?.resize(), 50);
   $('videoCall').classList.add('on');
+  stayAwake();
   stopVoice();
   if (!handsFree) { setHandsFree(true); handsFreeLoop(); }
   toast('Video call: just talk. She sees what your camera sees each time you speak.');
@@ -706,6 +710,7 @@ function endVideoCall() {
   paintAvatar();
   $('videoCall').classList.remove('on');
   if (handsFree) setHandsFree(false);
+  stayAwake();
 }
 async function handsFreeLoop() {
   try {
@@ -722,7 +727,11 @@ async function handsFreeLoop() {
     catch { said = ''; }
     $('mic').classList.remove('listening');
     if (!handsFree) break;
-    if (!said) { if (!videoCall && ++misses >= 3) setHandsFree(false, 'Hands-free is off (I heard nothing). Tap 🎧 to talk again.'); continue; }
+    if (!said) {
+      if (!videoCall && ++misses >= 3) setHandsFree(false, 'Hands-free is off (I heard nothing). Tap 🎧 to talk again.');
+      await new Promise((r) => setTimeout(r, document.hidden ? 1500 : 300)); // never a tight loop, e.g. while the app is paused
+      continue;
+    }
     misses = 0;
     const p = videoCall ? grabFrame() : attached; if (!videoCall) { attached = null; showAttached(); }
     await send(said, p);
@@ -1078,7 +1087,12 @@ async function start() {
     Phone.getShared().then(takeShared).catch(() => {});
     Phone.addListener('shared', takeShared);
     AppP.addListener('backButton', () => { if ($('tab-chat').hidden) showTab('chat'); else AppP.minimizeApp(); });
-    AppP.addListener('resume', () => { renderAccess(); renderReminders(); });
+    AppP.addListener('resume', () => {
+      renderAccess(); renderReminders();
+      // back from a locked screen or another app mid-call: the camera is turned on again (Android stopped it)
+      if (videoCall && (!camStream || camStream.getVideoTracks().every((t) => t.readyState === 'ended'))) startCam().catch(() => toast("The camera didn't come back. End the call and start it again."));
+      stayAwake();
+    });
     if (Date.now() - S.lastUpdateCheck > 12 * 3600e3) checkUpdate(false);
   }
   setTimeout(writeDiary, 4000);
